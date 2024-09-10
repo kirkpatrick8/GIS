@@ -2,15 +2,13 @@ import streamlit as st
 import pandas as pd
 import geopandas as gpd
 import ezdxf
+from ezdxf import recover
 from shapely.geometry import Point, LineString, Polygon
 import tempfile
 import os
 import zipfile
-import io
 from pyproj import CRS
-import ezdxf
-from ezdxf import recover
-from ezdxf.addons import odafc
+import io
 
 def log_debug(message):
     st.write(f"Debug: {message}")
@@ -54,9 +52,9 @@ def process_csv(file, crs):
         log_debug(f"Error in process_csv: {str(e)}")
         return None
 
-def process_dxf_or_dwg(file, crs, file_type):
+def process_cad(file, crs, file_type):
     try:
-        log_debug(f"Reading {file_type.upper()} file")
+        log_debug(f"Processing {file_type.upper()} file")
         file_content = file.read()
         
         if file_type == 'dwg':
@@ -71,8 +69,6 @@ def process_dxf_or_dwg(file, crs, file_type):
         msp = doc.modelspace()
 
         entities = []
-        log_debug(f"Processing {file_type.upper()} entities")
-
         for entity in msp:
             geom = None
             properties = {'dxftype': entity.dxftype()}
@@ -82,11 +78,15 @@ def process_dxf_or_dwg(file, crs, file_type):
             elif entity.dxftype() == 'LINE':
                 geom = LineString([entity.dxf.start[:2], entity.dxf.end[:2]])
             elif entity.dxftype() in ['LWPOLYLINE', 'POLYLINE']:
-                geom = Polygon(entity.get_points())
+                points = entity.get_points()
+                if len(points) > 2:
+                    geom = Polygon(points)
+                elif len(points) == 2:
+                    geom = LineString(points)
             
             if geom:
                 for attr in entity.dxf.all_existing_dxf_attribs():
-                    properties[attr] = getattr(entity.dxf, attr)
+                    properties[attr] = str(getattr(entity.dxf, attr))
                 entities.append({'geometry': geom, 'properties': properties})
 
         log_debug(f"Processed {len(entities)} entities")
@@ -97,7 +97,7 @@ def process_dxf_or_dwg(file, crs, file_type):
                 geometry=[e['geometry'] for e in entities],
                 crs=crs
             )
-            log_debug("GeoDataFrame created successfully")
+            log_debug(f"GeoDataFrame created with {len(gdf)} rows")
             return gdf
         else:
             st.error(f"No valid geometries found in the {file_type.upper()} file.")
@@ -105,7 +105,7 @@ def process_dxf_or_dwg(file, crs, file_type):
             return None
     except Exception as e:
         st.error(f"Error processing {file_type.upper()}: {str(e)}")
-        log_debug(f"Error in process_{file_type}: {str(e)}")
+        log_debug(f"Error in process_cad: {str(e)}")
         return None
 
 def save_and_zip_shapefile(gdf, output_filename):
@@ -157,7 +157,7 @@ def main():
                 gdf = process_csv(file, crs)
             elif file_extension in ['.dxf', '.dwg']:
                 log_debug(f"Processing {file_extension[1:].upper()} file")
-                gdf = process_dxf_or_dwg(file, crs, file_extension[1:])
+                gdf = process_cad(file, crs, file_extension[1:])
             else:
                 st.error("Unsupported file format. Please use CSV, DXF, or DWG files.")
                 log_debug(f"Unsupported file format: {file_extension}")
