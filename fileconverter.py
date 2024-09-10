@@ -6,9 +6,27 @@ from shapely.geometry import Point, LineString, Polygon
 import tempfile
 import os
 import zipfile
+import io
+from pyproj import CRS
+import ezdxf
+from ezdxf import recover
+from ezdxf.addons import odafc
 
 def log_debug(message):
     st.write(f"Debug: {message}")
+
+def get_crs_options():
+    crs_options = {
+        'EPSG:4326': 'WGS 84',
+        'EPSG:27700': 'OSGB 1936 / British National Grid',
+        'EPSG:29901': 'TM65 / Irish Grid',
+        'EPSG:29902': 'TM75 / Irish Grid',
+        'EPSG:2157': 'IRENET95 / Irish Transverse Mercator',
+        'EPSG:7405': 'OSGB36 / British National Grid + ODN height',
+        'EPSG:4937': 'ETRS89-GRS80',
+        'EPSG:3857': 'WGS 84 / Pseudo-Mercator',
+    }
+    return crs_options
 
 def process_csv(file, crs):
     try:
@@ -36,43 +54,55 @@ def process_csv(file, crs):
         log_debug(f"Error in process_csv: {str(e)}")
         return None
 
-def process_dxf(file, crs):
+def process_dxf_or_dwg(file, crs, file_type):
     try:
-        log_debug("Reading DXF file")
-        doc = ezdxf.readfile(file)
+        log_debug(f"Reading {file_type.upper()} file")
+        file_content = io.BytesIO(file.read())
+        file_content.seek(0)
+        
+        if file_type == 'dwg':
+            doc = recover.readfile(file_content)
+        else:  # dxf
+            doc = ezdxf.read(file_content)
+        
         msp = doc.modelspace()
 
-        points, lines, polygons = [], [], []
-        log_debug("Processing DXF entities")
+        entities = []
+        log_debug(f"Processing {file_type.upper()} entities")
 
         for entity in msp:
+            geom = None
+            properties = {'dxftype': entity.dxftype()}
+            
             if entity.dxftype() == 'POINT':
-                points.append(Point(entity.dxf.location[:2]))
+                geom = Point(entity.dxf.location[:2])
             elif entity.dxftype() == 'LINE':
-                lines.append(LineString([entity.dxf.start[:2], entity.dxf.end[:2]]))
+                geom = LineString([entity.dxf.start[:2], entity.dxf.end[:2]])
             elif entity.dxftype() in ['LWPOLYLINE', 'POLYLINE']:
-                polygons.append(Polygon(entity.get_points()))
+                geom = Polygon(entity.get_points())
+            
+            if geom:
+                for attr in entity.dxf.all_existing_dxf_attribs():
+                    properties[attr] = getattr(entity.dxf, attr)
+                entities.append({'geometry': geom, 'properties': properties})
 
-        log_debug(f"Processed {len(points)} points, {len(lines)} lines, {len(polygons)} polygons")
+        log_debug(f"Processed {len(entities)} entities")
 
-        gdfs = []
-        if points:
-            gdfs.append(gpd.GeoDataFrame(geometry=points, crs=crs))
-        if lines:
-            gdfs.append(gpd.GeoDataFrame(geometry=lines, crs=crs))
-        if polygons:
-            gdfs.append(gpd.GeoDataFrame(geometry=polygons, crs=crs))
-
-        if gdfs:
-            log_debug("Concatenating GeoDataFrames")
-            return pd.concat(gdfs, ignore_index=True)
+        if entities:
+            gdf = gpd.GeoDataFrame(
+                [e['properties'] for e in entities],
+                geometry=[e['geometry'] for e in entities],
+                crs=crs
+            )
+            log_debug("GeoDataFrame created successfully")
+            return gdf
         else:
-            st.error("No valid geometries found in the DXF file.")
+            st.error(f"No valid geometries found in the {file_type.upper()} file.")
             log_debug("No valid geometries found")
             return None
     except Exception as e:
-        st.error(f"Error processing DXF: {str(e)}")
-        log_debug(f"Error in process_dxf: {str(e)}")
+        st.error(f"Error processing {file_type.upper()}: {str(e)}")
+        log_debug(f"Error in process_{file_type}: {str(e)}")
         return None
 
 def save_and_zip_shapefile(gdf, output_filename):
@@ -99,58 +129,71 @@ def save_and_zip_shapefile(gdf, output_filename):
 
 def main():
     st.title('File to Shapefile Converter')
-    st.write("This app converts CSV or DXF files to shapefiles.")
+    st.write("This app converts CSV, DXF, or DWG files to shapefiles.")
     log_debug("App started")
 
-    file = st.file_uploader("Choose a CSV or DXF file", type=["csv", "dxf"])
+    file = st.file_uploader("Choose a CSV, DXF, or DWG file", type=["csv", "dxf", "dwg"])
     log_debug("File uploader displayed")
     
-    crs = st.text_input("Enter the coordinate system (e.g., EPSG:4326)", "EPSG:4326")
-    log_debug(f"CRS input displayed: {crs}")
+    crs_options = get_crs_options()
+    selected_crs = st.selectbox(
+        "Select coordinate system",
+        list(crs_options.keys()),
+        format_func=lambda x: f"{x} - {crs_options[x]}"
+    )
+    crs = CRS(selected_crs)
+    log_debug(f"Selected CRS: {selected_crs}")
 
     if file is not None:
-        log_debug(f"File uploaded: {file.name}")
+        log_debug(f"File uploaded: {file.name}, Size: {file.size} bytes, Type: {file.type}")
         file_extension = os.path.splitext(file.name)[1].lower()
         
-        if file_extension == '.csv':
-            log_debug("Processing CSV file")
-            gdf = process_csv(file, crs)
-        elif file_extension == '.dxf':
-            log_debug("Processing DXF file")
-            gdf = process_dxf(file, crs)
-        else:
-            st.error("Unsupported file format. Please use CSV or DXF files.")
-            log_debug(f"Unsupported file format: {file_extension}")
-            return
+        try:
+            if file_extension == '.csv':
+                log_debug("Processing CSV file")
+                gdf = process_csv(file, crs)
+            elif file_extension in ['.dxf', '.dwg']:
+                log_debug(f"Processing {file_extension[1:].upper()} file")
+                gdf = process_dxf_or_dwg(file, crs, file_extension[1:])
+            else:
+                st.error("Unsupported file format. Please use CSV, DXF, or DWG files.")
+                log_debug(f"Unsupported file format: {file_extension}")
+                return
 
-        if gdf is not None:
-            st.write("Data preview:")
-            st.write(gdf.head())
-            log_debug(f"GeoDataFrame created successfully with {len(gdf)} rows")
+            if gdf is not None:
+                st.write("Data preview:")
+                st.write(gdf.head())
+                log_debug(f"GeoDataFrame created successfully with {len(gdf)} rows")
 
-            output_filename = st.text_input("Enter output filename (without extension)", "output")
-            log_debug(f"Output filename set to: {output_filename}")
-            
-            if st.button('Convert to Shapefile'):
-                log_debug("Convert button clicked")
-                with st.spinner('Converting to shapefile...'):
-                    zip_filename = save_and_zip_shapefile(gdf, output_filename)
+                output_filename = st.text_input("Enter output filename (without extension)", "output")
+                log_debug(f"Output filename set to: {output_filename}")
                 
-                if zip_filename:
-                    log_debug(f"Shapefile created: {zip_filename}")
-                    with open(zip_filename, "rb") as fp:
-                        st.download_button(
-                            label="Download Shapefile",
-                            data=fp,
-                            file_name=zip_filename,
-                            mime="application/zip"
-                        )
-                    st.success(f"Shapefile created and zipped: {zip_filename}")
-                else:
-                    st.error("Failed to create shapefile. Please try again.")
-                    log_debug("Failed to create shapefile")
+                if st.button('Convert to Shapefile'):
+                    log_debug("Convert button clicked")
+                    with st.spinner('Converting to shapefile...'):
+                        zip_filename = save_and_zip_shapefile(gdf, output_filename)
+                    
+                    if zip_filename:
+                        log_debug(f"Shapefile created: {zip_filename}")
+                        with open(zip_filename, "rb") as fp:
+                            st.download_button(
+                                label="Download Shapefile",
+                                data=fp,
+                                file_name=zip_filename,
+                                mime="application/zip"
+                            )
+                        st.success(f"Shapefile created and zipped: {zip_filename}")
+                    else:
+                        st.error("Failed to create shapefile. Please try again.")
+                        log_debug("Failed to create shapefile")
+            else:
+                st.error("Failed to process the file. Please check the file format and try again.")
+                log_debug("Failed to create GeoDataFrame")
+        except Exception as e:
+            st.error(f"An unexpected error occurred: {str(e)}")
+            log_debug(f"Unexpected error in main: {str(e)}")
     else:
-        st.write("Please upload a CSV or DXF file to begin.")
+        st.write("Please upload a CSV, DXF, or DWG file to begin.")
         log_debug("Waiting for file upload")
 
 if __name__ == "__main__":
