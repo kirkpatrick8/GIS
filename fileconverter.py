@@ -57,13 +57,16 @@ def process_csv(file, crs):
 def process_dxf_or_dwg(file, crs, file_type):
     try:
         log_debug(f"Reading {file_type.upper()} file")
-        file_content = io.BytesIO(file.read())
-        file_content.seek(0)
+        file_content = file.read()
         
         if file_type == 'dwg':
-            doc = recover.readfile(file_content)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.dwg') as tmp_file:
+                tmp_file.write(file_content)
+                tmp_file_path = tmp_file.name
+            doc = recover.readfile(tmp_file_path)
+            os.unlink(tmp_file_path)
         else:  # dxf
-            doc = ezdxf.read(file_content)
+            doc = ezdxf.read(io.BytesIO(file_content))
         
         msp = doc.modelspace()
 
