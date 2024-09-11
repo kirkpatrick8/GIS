@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import geopandas as gpd
 import ezdxf
-from ezdxf import recover
 from shapely.geometry import Point, LineString, Polygon
 import tempfile
 import os
@@ -57,14 +56,8 @@ def process_cad(file, crs, file_type):
         log_debug(f"Processing {file_type.upper()} file")
         file_content = file.read()
         
-        if file_type == 'dwg':
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.dwg') as tmp_file:
-                tmp_file.write(file_content)
-                tmp_file_path = tmp_file.name
-            doc = recover.readfile(tmp_file_path)
-            os.unlink(tmp_file_path)
-        else:  # dxf
-            doc = ezdxf.read(io.BytesIO(file_content))
+        log_debug("Creating BytesIO object")
+        doc = ezdxf.read(io.BytesIO(file_content))
         
         msp = doc.modelspace()
 
@@ -83,6 +76,10 @@ def process_cad(file, crs, file_type):
                     geom = Polygon(points)
                 elif len(points) == 2:
                     geom = LineString(points)
+            elif entity.dxftype() == 'CIRCLE':
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                geom = Point(center).buffer(radius)
             
             if geom:
                 for attr in entity.dxf.all_existing_dxf_attribs():
