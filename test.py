@@ -1,5 +1,9 @@
 import streamlit as st
 import geopandas as gpd
+import ezdxf
+from ezdxf.addons.geo import GeoProxy
+from shapely.geometry import Point, LineString, Polygon
+import pandas as pd
 import os
 import zipfile
 import tempfile
@@ -8,17 +12,34 @@ def convert_dwg_to_shp(dwg_file):
     # Create a temporary directory to store the output files
     with tempfile.TemporaryDirectory() as temp_dir:
         # Read the DWG file
-        shape = gpd.read_file(dwg_file)
-        
-        # Get unique layers
-        layers = shape['Layer'].unique()
-        
-        # Convert each layer to a separate shapefile
-        for layer in layers:
-            export = shape[shape.Layer == layer]
-            output_file = os.path.join(temp_dir, f"{layer}.shp")
-            export.to_file(driver='ESRI Shapefile', filename=output_file)
-        
+        doc = ezdxf.readfile(dwg_file)
+        msp = doc.modelspace()
+
+        # Initialize dictionary to store geometries for each layer
+        layers = {}
+
+        # Iterate through entities in the DWG file
+        for entity in msp:
+            layer = entity.dxf.layer
+            if layer not in layers:
+                layers[layer] = []
+
+            # Convert DXF entity to geometry
+            try:
+                geo = GeoProxy.from_dxf_entity(entity)
+                if isinstance(geo, (Point, LineString, Polygon)):
+                    layers[layer].append(geo)
+            except Exception as e:
+                st.warning(f"Skipping unsupported entity: {str(e)}")
+
+        # Convert layers to GeoDataFrames and save as shapefiles
+        for layer, geometries in layers.items():
+            if geometries:
+                gdf = gpd.GeoDataFrame(geometry=geometries)
+                gdf['Layer'] = layer
+                output_file = os.path.join(temp_dir, f"{layer}.shp")
+                gdf.to_file(driver='ESRI Shapefile', filename=output_file)
+
         # Create a zip file containing all the shapefiles
         zip_filename = os.path.join(temp_dir, "output_shapefiles.zip")
         with zipfile.ZipFile(zip_filename, 'w') as zipf:
@@ -26,7 +47,7 @@ def convert_dwg_to_shp(dwg_file):
                 for file in files:
                     if file != "output_shapefiles.zip":
                         zipf.write(os.path.join(root, file), file)
-        
+
         return zip_filename
 
 st.title("DWG to SHP Converter")
