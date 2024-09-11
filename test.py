@@ -6,18 +6,24 @@ from shapely.geometry import Point, LineString, Polygon
 import tempfile
 import os
 import zipfile
+from dwg2dxf import convert
 
-def convert_dwg_to_shp(dwg_file):
+def convert_dwg_to_dxf(dwg_file):
+    dxf_file = dwg_file.replace('.dwg', '.dxf')
+    convert(dwg_file, dxf_file)
+    return dxf_file
+
+def convert_dxf_to_shp(dxf_file):
     # Create a temporary directory to store the output files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Read the DWG file
-        doc = ezdxf.readfile(dwg_file)
+        # Read the DXF file
+        doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
 
         # Initialize dictionary to store geometries for each layer
         layers = {}
 
-        # Iterate through entities in the DWG file
+        # Iterate through entities in the DXF file
         for entity in msp:
             layer = entity.dxf.layer
             if layer not in layers:
@@ -63,11 +69,15 @@ if uploaded_file is not None:
             # Save the uploaded file temporarily
             with tempfile.NamedTemporaryFile(delete=False, suffix=".dwg") as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
-                tmp_file_path = tmp_file.name
+                tmp_dwg_path = tmp_file.name
             
             # Convert the file
             try:
-                zip_file = convert_dwg_to_shp(tmp_file_path)
+                # Convert DWG to DXF
+                dxf_file = convert_dwg_to_dxf(tmp_dwg_path)
+                
+                # Convert DXF to SHP
+                zip_file = convert_dxf_to_shp(dxf_file)
                 
                 # Offer the zip file for download
                 with open(zip_file, "rb") as file:
@@ -81,7 +91,9 @@ if uploaded_file is not None:
             except Exception as e:
                 st.error(f"An error occurred during conversion: {str(e)}")
             finally:
-                # Clean up the temporary file
-                os.unlink(tmp_file_path)
+                # Clean up the temporary files
+                os.unlink(tmp_dwg_path)
+                if 'dxf_file' in locals():
+                    os.unlink(dxf_file)
 else:
     st.write("Please upload a DWG file to begin.")
