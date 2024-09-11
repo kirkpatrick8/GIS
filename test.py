@@ -1,6 +1,5 @@
 import streamlit as st
 import ezdxf
-from ezdxf.addons.geo import GeoProxy
 import geopandas as gpd
 from shapely.geometry import Point, LineString, Polygon
 import tempfile
@@ -29,6 +28,7 @@ def convert_dwg_to_gdf(file_content):
                     polygons.append(Polygon(vertices))
                 else:
                     lines.append(LineString(vertices))
+            # Add more entity types as needed
         
         gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
         gdf_lines = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
@@ -42,9 +42,9 @@ def convert_dwg_to_gdf(file_content):
 
 def create_zip_buffer(gdfs):
     with tempfile.TemporaryDirectory() as tmpdir:
-        for i, gdf in enumerate(gdfs):
+        for i, (gdf, name) in enumerate(zip(gdfs, ['points', 'lines', 'polygons'])):
             if not gdf.empty:
-                gdf.to_file(os.path.join(tmpdir, f"layer_{i}.shp"))
+                gdf.to_file(os.path.join(tmpdir, f"{name}.shp"))
         
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -55,7 +55,7 @@ def create_zip_buffer(gdfs):
     zip_buffer.seek(0)
     return zip_buffer
 
-st.title('DWG to Shapefile Converter')
+st.title('DWG to Shapefile Converter (Model Space)')
 
 uploaded_file = st.file_uploader("Choose a DWG file", type=['dwg'])
 
@@ -76,7 +76,7 @@ if uploaded_file is not None:
         st.success("Conversion successful! Click the button above to download your shapefiles.")
         
         # Display preview of the data
-        st.subheader("Data Preview")
+        st.subheader("Data Preview (Model Space)")
         st.write("Points:")
         st.write(gdf_points.head())
         st.write("Lines:")
@@ -89,4 +89,4 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
 
-st.write("Note: This app supports basic DWG elements (points, lines, and polylines). Complex entities may not be fully supported.")
+st.write("Note: This app extracts geometries from the model space of the DWG file. It supports basic elements (points, lines, and polylines). Complex entities may not be fully supported.")
