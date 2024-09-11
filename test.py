@@ -1,18 +1,19 @@
 import streamlit as st
 import ezdxf
-from ezdxf.addons.geo import GeoProxy
 import json
 import tempfile
+import os
+from dwg2dxf import convert
 
-def convert_dwg_to_geojson(file_content):
-    # Create a temporary file to save the uploaded content
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.dwg') as tmp_file:
-        tmp_file.write(file_content)
-        tmp_file_path = tmp_file.name
+def convert_dwg_to_dxf(dwg_path):
+    dxf_path = dwg_path.replace('.dwg', '.dxf')
+    convert(dwg_path, dxf_path)
+    return dxf_path
 
+def convert_dxf_to_geojson(dxf_path):
     try:
-        # Read the DWG file
-        doc = ezdxf.readfile(tmp_file_path)
+        # Read the DXF file
+        doc = ezdxf.readfile(dxf_path)
         msp = doc.modelspace()
 
         features = []
@@ -61,7 +62,7 @@ def convert_dwg_to_geojson(file_content):
         return geojson
 
     except Exception as e:
-        raise ValueError(f"An error occurred while processing the DWG file: {str(e)}")
+        raise ValueError(f"An error occurred while processing the DXF file: {str(e)}")
 
 st.title('DWG to GeoJSON Converter')
 
@@ -69,8 +70,16 @@ uploaded_file = st.file_uploader("Choose a DWG file", type=['dwg'])
 
 if uploaded_file is not None:
     try:
-        file_contents = uploaded_file.read()
-        geojson = convert_dwg_to_geojson(file_contents)
+        # Save uploaded file to a temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.dwg') as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            dwg_path = tmp_file.name
+
+        # Convert DWG to DXF
+        dxf_path = convert_dwg_to_dxf(dwg_path)
+
+        # Convert DXF to GeoJSON
+        geojson = convert_dxf_to_geojson(dxf_path)
         
         # Convert GeoJSON to a formatted JSON string
         geojson_str = json.dumps(geojson, indent=2)
@@ -92,5 +101,11 @@ if uploaded_file is not None:
         st.error(str(ve))
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
+    finally:
+        # Clean up temporary files
+        if 'dwg_path' in locals():
+            os.remove(dwg_path)
+        if 'dxf_path' in locals():
+            os.remove(dxf_path)
 
 st.write("Note: This app converts basic entities (points, lines, and polylines) from the model space of the DWG file to GeoJSON. Complex entities may not be fully supported.")
