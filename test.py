@@ -1,92 +1,96 @@
 import streamlit as st
 import ezdxf
-import geopandas as gpd
-from shapely.geometry import Point, LineString, Polygon
+from ezdxf.addons.geo import GeoProxy
+import json
 import tempfile
-import os
-import zipfile
-import io
 
-def convert_dwg_to_gdf(file_content):
+def convert_dwg_to_geojson(file_content):
+    # Create a temporary file to save the uploaded content
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.dwg') as tmp_file:
+        tmp_file.write(file_content)
+        tmp_file_path = tmp_file.name
+
     try:
-        doc = ezdxf.read(io.BytesIO(file_content))
+        # Read the DWG file
+        doc = ezdxf.readfile(tmp_file_path)
         msp = doc.modelspace()
-        
-        points = []
-        lines = []
-        polygons = []
-        
+
+        features = []
+
         for entity in msp:
             if entity.dxftype() == 'POINT':
-                points.append(Point(entity.dxf.location[:2]))
+                geometry = {
+                    "type": "Point",
+                    "coordinates": [entity.dxf.location.x, entity.dxf.location.y]
+                }
             elif entity.dxftype() == 'LINE':
-                lines.append(LineString([entity.dxf.start[:2], entity.dxf.end[:2]]))
+                geometry = {
+                    "type": "LineString",
+                    "coordinates": [
+                        [entity.dxf.start.x, entity.dxf.start.y],
+                        [entity.dxf.end.x, entity.dxf.end.y]
+                    ]
+                }
             elif entity.dxftype() == 'LWPOLYLINE':
-                with entity.points() as point_gen:
-                    vertices = list(point_gen)
-                if len(vertices) >= 3 and vertices[0] == vertices[-1]:
-                    polygons.append(Polygon(vertices))
-                else:
-                    lines.append(LineString(vertices))
-            # Add more entity types as needed
-        
-        gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
-        gdf_lines = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
-        gdf_polygons = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
-        
-        return gdf_points, gdf_lines, gdf_polygons
-    except ezdxf.DXFStructureError:
-        raise ValueError("Invalid or corrupted DWG file")
+                points = list(entity.get_points())
+                geometry = {
+                    "type": "LineString",
+                    "coordinates": [[p[0], p[1]] for p in points]
+                }
+                if entity.closed:
+                    geometry["type"] = "Polygon"
+                    geometry["coordinates"] = [geometry["coordinates"]]
+            else:
+                continue  # Skip unsupported entities
+
+            feature = {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "layer": entity.dxf.layer,
+                    "type": entity.dxftype()
+                }
+            }
+            features.append(feature)
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features
+        }
+
+        return geojson
+
     except Exception as e:
         raise ValueError(f"An error occurred while processing the DWG file: {str(e)}")
 
-def create_zip_buffer(gdfs):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for i, (gdf, name) in enumerate(zip(gdfs, ['points', 'lines', 'polygons'])):
-            if not gdf.empty:
-                gdf.to_file(os.path.join(tmpdir, f"{name}.shp"))
-        
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(tmpdir):
-                for file in files:
-                    zipf.write(os.path.join(root, file), file)
-    
-    zip_buffer.seek(0)
-    return zip_buffer
-
-st.title('DWG to Shapefile Converter (Model Space)')
+st.title('DWG to GeoJSON Converter')
 
 uploaded_file = st.file_uploader("Choose a DWG file", type=['dwg'])
 
 if uploaded_file is not None:
     try:
         file_contents = uploaded_file.read()
-        gdf_points, gdf_lines, gdf_polygons = convert_dwg_to_gdf(file_contents)
+        geojson = convert_dwg_to_geojson(file_contents)
         
-        zip_buffer = create_zip_buffer([gdf_points, gdf_lines, gdf_polygons])
+        # Convert GeoJSON to a formatted JSON string
+        geojson_str = json.dumps(geojson, indent=2)
+        
+        st.success("Conversion successful! You can now download the GeoJSON file.")
         
         st.download_button(
-            label="Download Shapefiles",
-            data=zip_buffer,
-            file_name="shapefiles.zip",
-            mime="application/zip"
+            label="Download GeoJSON",
+            data=geojson_str,
+            file_name="converted_drawing.geojson",
+            mime="application/json"
         )
         
-        st.success("Conversion successful! Click the button above to download your shapefiles.")
-        
-        # Display preview of the data
-        st.subheader("Data Preview (Model Space)")
-        st.write("Points:")
-        st.write(gdf_points.head())
-        st.write("Lines:")
-        st.write(gdf_lines.head())
-        st.write("Polygons:")
-        st.write(gdf_polygons.head())
+        # Display a preview of the GeoJSON
+        st.subheader("GeoJSON Preview")
+        st.json(geojson)
         
     except ValueError as ve:
         st.error(str(ve))
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
 
-st.write("Note: This app extracts geometries from the model space of the DWG file. It supports basic elements (points, lines, and polylines). Complex entities may not be fully supported.")
+st.write("Note: This app converts basic entities (points, lines, and polylines) from the model space of the DWG file to GeoJSON. Complex entities may not be fully supported.")
