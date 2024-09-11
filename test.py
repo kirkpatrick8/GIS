@@ -8,32 +8,37 @@ import os
 import zipfile
 import io
 
-def convert_dwg_to_gdf(dwg_file):
-    doc = ezdxf.readfile(dwg_file)
-    msp = doc.modelspace()
-    
-    points = []
-    lines = []
-    polygons = []
-    
-    for entity in msp:
-        if entity.dxftype() == 'POINT':
-            points.append(Point(entity.dxf.location[:2]))
-        elif entity.dxftype() == 'LINE':
-            lines.append(LineString([entity.dxf.start[:2], entity.dxf.end[:2]]))
-        elif entity.dxftype() == 'LWPOLYLINE':
-            with entity.points() as point_gen:
-                vertices = list(point_gen)
-            if len(vertices) >= 3 and vertices[0] == vertices[-1]:
-                polygons.append(Polygon(vertices))
-            else:
-                lines.append(LineString(vertices))
-    
-    gdf_points = gpd.GeoDataFrame(geometry=points)
-    gdf_lines = gpd.GeoDataFrame(geometry=lines)
-    gdf_polygons = gpd.GeoDataFrame(geometry=polygons)
-    
-    return gdf_points, gdf_lines, gdf_polygons
+def convert_dwg_to_gdf(file_content):
+    try:
+        doc = ezdxf.read(io.BytesIO(file_content))
+        msp = doc.modelspace()
+        
+        points = []
+        lines = []
+        polygons = []
+        
+        for entity in msp:
+            if entity.dxftype() == 'POINT':
+                points.append(Point(entity.dxf.location[:2]))
+            elif entity.dxftype() == 'LINE':
+                lines.append(LineString([entity.dxf.start[:2], entity.dxf.end[:2]]))
+            elif entity.dxftype() == 'LWPOLYLINE':
+                with entity.points() as point_gen:
+                    vertices = list(point_gen)
+                if len(vertices) >= 3 and vertices[0] == vertices[-1]:
+                    polygons.append(Polygon(vertices))
+                else:
+                    lines.append(LineString(vertices))
+        
+        gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
+        gdf_lines = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
+        gdf_polygons = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
+        
+        return gdf_points, gdf_lines, gdf_polygons
+    except ezdxf.DXFStructureError:
+        raise ValueError("Invalid or corrupted DWG file")
+    except Exception as e:
+        raise ValueError(f"An error occurred while processing the DWG file: {str(e)}")
 
 def create_zip_buffer(gdfs):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -56,7 +61,8 @@ uploaded_file = st.file_uploader("Choose a DWG file", type=['dwg'])
 
 if uploaded_file is not None:
     try:
-        gdf_points, gdf_lines, gdf_polygons = convert_dwg_to_gdf(uploaded_file)
+        file_contents = uploaded_file.read()
+        gdf_points, gdf_lines, gdf_polygons = convert_dwg_to_gdf(file_contents)
         
         zip_buffer = create_zip_buffer([gdf_points, gdf_lines, gdf_polygons])
         
@@ -78,7 +84,9 @@ if uploaded_file is not None:
         st.write("Polygons:")
         st.write(gdf_polygons.head())
         
+    except ValueError as ve:
+        st.error(str(ve))
     except Exception as e:
-        st.error(f"An error occurred during conversion: {str(e)}")
+        st.error(f"An unexpected error occurred: {str(e)}")
 
 st.write("Note: This app supports basic DWG elements (points, lines, and polylines). Complex entities may not be fully supported.")
