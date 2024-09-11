@@ -1,9 +1,6 @@
 import streamlit as st
 import geopandas as gpd
-import ezdxf
-from ezdxf.addons.geo import GeoProxy
-from shapely.geometry import Point, LineString, Polygon
-import pandas as pd
+from osgeo import ogr
 import os
 import zipfile
 import tempfile
@@ -11,34 +8,42 @@ import tempfile
 def convert_dwg_to_shp(dwg_file):
     # Create a temporary directory to store the output files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Read the DWG file
-        doc = ezdxf.readfile(dwg_file)
-        msp = doc.modelspace()
+        # Open the DWG file
+        driver = ogr.GetDriverByName("DWG")
+        data_source = driver.Open(dwg_file, 0)
+        
+        if data_source is None:
+            raise Exception("Could not open the DWG file. Please ensure it's a valid DWG file.")
 
-        # Initialize dictionary to store geometries for each layer
-        layers = {}
+        # Get the number of layers in the DWG file
+        layer_count = data_source.GetLayerCount()
 
-        # Iterate through entities in the DWG file
-        for entity in msp:
-            layer = entity.dxf.layer
-            if layer not in layers:
-                layers[layer] = []
+        for i in range(layer_count):
+            layer = data_source.GetLayer(i)
+            layer_name = layer.GetName()
+            
+            # Create a new shapefile
+            output_file = os.path.join(temp_dir, f"{layer_name}.shp")
+            out_driver = ogr.GetDriverByName("ESRI Shapefile")
+            out_ds = out_driver.CreateDataSource(output_file)
+            out_layer = out_ds.CreateLayer(layer_name, layer.GetSpatialRef(), layer.GetGeomType())
 
-            # Convert DXF entity to geometry
-            try:
-                geo = GeoProxy.from_dxf_entity(entity)
-                if isinstance(geo, (Point, LineString, Polygon)):
-                    layers[layer].append(geo)
-            except Exception as e:
-                st.warning(f"Skipping unsupported entity: {str(e)}")
+            # Copy the fields from the input layer to the output layer
+            layer_defn = layer.GetLayerDefn()
+            for i in range(layer_defn.GetFieldCount()):
+                field_defn = layer_defn.GetFieldDefn(i)
+                out_layer.CreateField(field_defn)
 
-        # Convert layers to GeoDataFrames and save as shapefiles
-        for layer, geometries in layers.items():
-            if geometries:
-                gdf = gpd.GeoDataFrame(geometry=geometries)
-                gdf['Layer'] = layer
-                output_file = os.path.join(temp_dir, f"{layer}.shp")
-                gdf.to_file(driver='ESRI Shapefile', filename=output_file)
+            # Copy the features from the input layer to the output layer
+            for feature in layer:
+                out_feature = ogr.Feature(out_layer.GetLayerDefn())
+                out_feature.SetGeometry(feature.GetGeometryRef().Clone())
+                for i in range(feature.GetFieldCount()):
+                    out_feature.SetField(i, feature.GetField(i))
+                out_layer.CreateFeature(out_feature)
+                out_feature = None
+
+            out_ds = None
 
         # Create a zip file containing all the shapefiles
         zip_filename = os.path.join(temp_dir, "output_shapefiles.zip")
