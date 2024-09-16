@@ -1,3 +1,6 @@
 streamlit
+pandas
+geopandas
 ezdxf
-dwg2dxf
+shapely
+pyproj
